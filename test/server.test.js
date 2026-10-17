@@ -1,0 +1,13 @@
+const {test,before,after}=require('node:test');
+const assert=require('node:assert/strict');
+const {createServer}=require('../server');
+const {extractPdf:pdfParse}=require('../server');
+const fs=require('node:fs');
+let server,base;
+before(async()=>{server=createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));base='http://127.0.0.1:'+server.address().port;});
+after(()=>new Promise(resolve=>server.close(resolve)));
+test('uploads text without saving files',async()=>{const response=await fetch(base+'/api/upload',{method:'POST',headers:{'X-File-Extension':'txt'},body:'Jordan Davis\nProjects\n- Built Python API.'});assert.equal(response.status,200);assert.match((await response.json()).text,/Built Python API/);});
+test('rejects unsupported, empty, corrupt and oversized files',async()=>{for(const [type,body,status] of [['exe','text',400],['txt','',400],['pdf','not a pdf',422],['docx','invalid',422],['txt',Buffer.alloc(10*1024*1024+1,65),413]]){const r=await fetch(base+'/api/upload',{method:'POST',headers:{'X-File-Extension':type},body});assert.equal(r.status,status);assert.ok((await r.json()).error);}});
+test('downloads a real multipage PDF and extracts its resume text',async()=>{const text='Jordan Davis\nSummary\nPython engineer\nProjects\nSearch Assistant\n- Built a Python API.\n'+Array(85).fill('- Maintained existing search service.').join('\n');const response=await fetch(base+'/api/resume.pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/application\/pdf/);const buffer=Buffer.from(await response.arrayBuffer());assert.equal(buffer.subarray(0,5).toString(),'%PDF-');const result=await pdfParse(buffer);assert.ok(result.numpages>1);assert.match(result.text,/Jordan Davis/);assert.match(result.text,/Built a Python API/);assert.doesNotMatch(result.text,/Honesty check|Match score/);const uploaded=await fetch(base+'/api/upload',{method:'POST',headers:{'X-File-Extension':'pdf'},body:buffer});assert.equal(uploaded.status,200);assert.match((await uploaded.json()).text,/Search Assistant/);});
+test('rejects empty PDF export',async()=>{const r=await fetch(base+'/api/resume.pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:''})});assert.equal(r.status,400);});
+test('extracts DOCX resume paragraphs',async()=>{const r=await fetch(base+'/api/upload',{method:'POST',headers:{'X-File-Extension':'docx'},body:fs.readFileSync(require('node:path').join(__dirname,'fixtures','resume.docx'))});assert.equal(r.status,200);assert.match((await r.json()).text,/Built Python API/);});
